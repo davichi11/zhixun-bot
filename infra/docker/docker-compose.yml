@@ -1,0 +1,58 @@
+# 智讯助手 · 生产编排
+#
+# 起：docker compose -f infra/docker/docker-compose.yml up -d
+# 停：docker compose -f infra/docker/docker-compose.yml down
+#
+# 注意：生产态把 DATABASE_URL 指向 postgres，并把 SCHEDULER_ENABLED 打开。
+# 为了让调度器只跑一份，把它放在 backend 单实例上（--scale backend=1）。
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: zhixun
+      POSTGRES_USER: zhixun
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 中设置}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U zhixun -d zhixun']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.backend
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      ENV: prod
+      DEBUG: 'false'
+      DATABASE_URL: postgresql+asyncpg://zhixun:${POSTGRES_PASSWORD}@postgres:5432/zhixun
+      SCHEDULER_ENABLED: 'true'
+      VECTOR_DB_URI: /data/lancedb
+    volumes:
+      - lancedb:/data/lancedb
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - '8000'
+
+  frontend:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - '80:80'
+
+volumes:
+  pgdata:
+  lancedb:

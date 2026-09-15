@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  @apply bg-slate-50 text-slate-800 antialiased;
+}
+
+/* 让长文本稿件在审校面板里读起来更舒服（中文正文行高放宽） */
+.prose-zh {
+  @apply text-[15px] leading-7 text-slate-700;
+}

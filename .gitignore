@@ -1,0 +1,46 @@
+# ---------------------------------------------------------------- 环境与密钥
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# ---------------------------------------------------------------- Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+dist/
+build/
+
+# ---------------------------------------------------------------- 数据与产物
+*.db
+*.sqlite
+*.sqlite3
+.lancedb/
+logs/
+data/
+exports/
+
+# ---------------------------------------------------------------- Node
+node_modules/
+.pnpm-store/
+*.tsbuildinfo
+vite.config.ts.timestamp-*
+
+# ---------------------------------------------------------------- 构建产物
+apps/frontend/dist/
+apps/backend/build/
+
+# ---------------------------------------------------------------- 编辑器与系统
+.DS_Store
+.idea/
+.vscode/
+*.swp
