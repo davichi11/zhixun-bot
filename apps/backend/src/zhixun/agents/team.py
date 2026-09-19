@@ -8,9 +8,14 @@
   - Twitter 写手：犀利短句、钩子前置
 
 三者互不依赖 → 适合并行；风格差异大 → 适合各自独立的 Agent。
-所以这里用 Team（coordinate 模式）做局部嵌套，由协调者统一把关口吻一致性。
+所以这里用 Team（coordinate 模式）做局部嵌套，由团队协调者统一把关口吻一致性。
 
-第 1 篇：搭出 Team 骨架与三个平台写手的规格。
+⚠️ Agno 3.x 迁移注意：
+v3 的 `Team` **没有 `leader` 参数**（2.x 的写法会直接报 TypeError）。
+协调者不再是一个成员 Agent，而是 **Team 自身** —— 用 Team 的 `model` + `instructions`
+扮演协调角色，成员只负责各自的子任务。这正是 coordinate 模式的语义。
+
+第 2 篇：把 Team 改成 v3 写法，并补齐三个平台写手的提示词模板。
 第 5 篇：接入 Workflow 的"改写"步骤，真正跑起来。
 """
 
@@ -19,11 +24,15 @@ from __future__ import annotations
 from typing import Any
 
 from zhixun.agents.base import AgentSpec, build_agent
+from zhixun.config.llm import get_model
 from zhixun.config.logging import get_logger
 
 logger = get_logger(__name__)
 
+TEAM_NAME = "平台写手团"
+
 # ------------------------------------------------------------------ 平台写手
+# 每个平台的"调性"独立成条，方便单独迭代（改 Twitter 的钩子写法不影响公众号）
 
 _PLATFORM_STYLE: dict[str, str] = {
     "公众号": (
@@ -49,23 +58,20 @@ PLATFORM_WRITER_SPECS: list[AgentSpec] = [
             f"你是智讯助手的{platform}写手。",
             _PLATFORM_STYLE[platform],
             "素材事实不得改动，只能改变表达方式与结构。",
-            "输出 Markdown。",
+            "输出 Markdown，不要输出任何解释性前言。",
         ],
     )
     for platform in _PLATFORM_STYLE
 ]
 
-# 协调者：不写作，只做风格一致性与事实一致性把关
-TEAM_LEADER_SPEC = AgentSpec(
-    name="改写协调者",
-    role="team_leader",
-    description="统筹三个平台写手并行改写，统一事实口径与品牌调性，汇总为多平台稿件包。",
-    instructions=[
-        "你负责协调三个平台写手，自己不写稿。",
-        "确保三位写手使用同一版事实，不允许出现互相矛盾的数字或结论。",
-        "汇总时按平台分组输出，并标注每个版本的字数与目标平台。",
-    ],
-)
+# 协调者的职责写进 Team 的 instructions（v3 里 Team 自己就是协调者）
+TEAM_INSTRUCTIONS: list[str] = [
+    "你是「平台写手团」的协调者，自己不写稿，只做组织与把关。",
+    "把同一份素材分派给三位平台写手，要求他们并行产出各自平台版本。",
+    "确保三位写手使用同一版事实，不允许出现互相矛盾的数字或结论。",
+    "汇总时按平台分组输出，并标注每个版本的字数与目标平台。",
+    "如果某个平台版本偏离事实或过度发挥，打回重写，不要直接把问题版本交上去。",
+]
 
 
 def build_platform_writer_team(**overrides: Any) -> Any:
@@ -77,15 +83,15 @@ def build_platform_writer_team(**overrides: Any) -> Any:
     from agno.team import Team
 
     members = [build_agent(spec) for spec in PLATFORM_WRITER_SPECS]
-    leader = build_agent(TEAM_LEADER_SPEC)
 
-    logger.debug("team.build", members=[s.name for s in PLATFORM_WRITER_SPECS])
+    logger.debug("team.build", team=TEAM_NAME, members=[s.name for s in PLATFORM_WRITER_SPECS])
 
     kwargs: dict[str, Any] = {
-        "name": "平台写手团",
-        "mode": "coordinate",
+        "name": TEAM_NAME,
+        "mode": "coordinate",  # 协调模式：Team 自己当 leader，按需分派给成员
+        "model": get_model("primary"),
         "members": members,
-        "leader": leader,
+        "instructions": TEAM_INSTRUCTIONS,
         "markdown": True,
     }
     kwargs.update(overrides)

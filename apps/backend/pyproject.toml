@@ -8,7 +8,11 @@ license = { text = "MIT" }
 
 dependencies = [
     # ---- Agent 框架 ----
-    "agno>=2.0.0",
+    # Agno 3.x：破坏性大版本。v3 起 Run 独立成表（agno_runs），
+    # 升级后必须先跑 MigrationManager(db).up() 再承接流量，详见 docs/architecture.md
+    "agno>=3.0.9",
+    # 模型 SDK（按需安装：本项目默认走 OpenAI / DeepSeek）
+    "openai>=1.60.0",
     # ---- Web ----
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",

@@ -40,13 +40,16 @@ class Settings(BaseSettings):
     api_prefix: str = "/api/v1"
 
     # ------------------------------------------------------------ LLM
+    # 模型 id 一律以 Agno 3.x 的默认为基准，升级框架时只需改这里
     llm_provider: Literal["openai", "deepseek", "anthropic"] = "openai"
     openai_api_key: str = ""
-    openai_model: str = "gpt-4o-mini"
+    openai_model: str = "gpt-5.4"
+    openai_light_model: str = "gpt-5.4-mini"
     deepseek_api_key: str = ""
-    deepseek_model: str = "deepseek-chat"
+    deepseek_model: str = "deepseek-v4-flash"
+    deepseek_light_model: str = "deepseek-v4-flash"
     anthropic_api_key: str = ""
-    anthropic_model: str = "claude-3-5-sonnet-latest"
+    anthropic_model: str = "claude-sonnet-4-5"
     llm_temperature: float = 0.3
 
     # ------------------------------------------------------------ 数据库
@@ -69,10 +72,24 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = False
     weekly_report_cron: str = "0 9 * * 1"  # 每周一 09:00
 
+    # ------------------------------------------------------------ Agent 层（第 2 篇）
+    # 提示词模板目录（相对 backend 根目录），支持按 env 覆盖做 A/B 实验
+    prompts_dir: str = "src/zhixun/prompts"
+    # 生产环境关闭"内联提示词"，强制所有 Agent 从模板加载，避免提示词散落
+    allow_inline_prompts: bool = False
+
     # ------------------------------------------------------------ Harness（第 7 篇）
     enable_harness: bool = True
     context_unload_threshold: float = 0.85
     context_max_tokens: int = 128_000
+    # Agno 3.x 原生能力：工具结果超过阈值即卸载到 AgentFS，只留信封（preview+size+result_id）
+    # 这是"动态上下文工程"第一道防线，第 7 篇会在其之上叠加渐进式披露
+    offload_tool_results: bool = True
+    tool_offload_threshold_chars: int = 16_000
+    # Agno 3.x 原生护栏（PromptInjection / PII / Moderation），第 7 篇接入
+    enable_native_guardrails: bool = False
+    # 在 Agent 上启用 CodeMode（工具多且需要组合调用时才开，默认关闭）
+    enable_code_mode: bool = False
 
     # ------------------------------------------------------------ 便捷属性
     @property

@@ -30,8 +30,11 @@
 **Team 的唯一用武之地**：改写步骤里，公众号 / 知乎 / Twitter 三个写手**并行 + 各自人格独立**，
 天然适合 Team（coordinate 模式）。
 
-**否决方案**：全部用 Team 的 coordinate 模式串起来。问题是 Leader 的调度不可复现，
+**否决方案**：全部用 Team 的 coordinate 模式串起来。问题是团队协调者的调度不可复现，
 同一份输入两次运行结果可能不同，无法做回归测试。
+
+> ⚠️ **Agno 3.x 提醒**：v3 的 `Team` 已**移除 `leader` 参数**（2.x 写法会直接 TypeError）。
+> 协调者就是 Team 自身 —— 用 Team 的 `model` + `instructions` 扮演，成员只负责子任务。
 
 ---
 
@@ -72,3 +75,40 @@
 - LanceDB 的嵌入式特性和 SQLite 组合，让"单机个人部署"成为可能（这也是目标用户之一）
 
 **代价**：SQLite 的并发写能力弱。当并发采集任务变多时（第 5 篇的并行步骤），需要切 Postgres。
+
+---
+
+## ADR-006：提示词必须外置为模板文件，不允许内联
+
+**决策**：所有 Agent 的提示词放在 `src/zhixun/prompts/*.md`，
+由 `prompts/__init__.py` 解析（front matter + `##` 分节 + `{{ 变量 }}` 注入）。
+`settings.allow_inline_prompts=False` 时，内联提示词会被警告；CI 跑 `zhixun agents --audit` 拦截。
+
+**理由**：
+- 提示词是**产品资产**，不是实现细节。它需要被 review、被 diff、被回滚
+- 内容策略（评分权重、字数上限、语气规范）应该让运营同学能改，而不是每次都提工单
+- 内联提示词混在业务 diff 里，reviewer 看不出重点
+
+**否决方案 A**：全部内联在 Python 里。结果是改一个词要发一次版，且无人敢动。
+**否决方案 B**：引入 Langfuse / PromptLayer 之类的在线提示词管理。
+对一个开源项目来说引入了外部依赖与账号门槛，本地 Markdown 已经够用且可在 Git 里审计。
+
+---
+
+## ADR-007：升级到 Agno 3.x 的迁移决策
+
+**决策**：项目基线直接锁定 `agno>=3.0.9`，不兼容 2.x。
+
+**v3 的破坏性变更与本项目的应对**：
+
+| v3 变更 | 影响 | 本项目处理 |
+|---|---|---|
+| Run 从 session blob 拆到 `agno_runs` 表 | 升级后必须先迁移再承接流量 | 开发态 SQLite 直接重建；生产态走 `MigrationManager(db).up()` |
+| `Team` 移除 `leader` 参数 | 2.x 写法直接报错 | 改为 Team 自身用 `model` + `instructions` 当协调者 |
+| 工具结果超过 16000 字符自动卸载 | 上下文行为变化 | 主动开启 `offload_tool_results=True`，作为 Harness 第一道防线 |
+| 新增原生 guardrails | 与自研护栏重叠 | 第 7 篇统一：原生护栏管通用风险，自研护栏管业务规则 |
+| `MCPConfig` / `AgentOS(mcp=...)` 改名 | 旧名保留为别名，3.1 移除 | 第 6 篇直接使用新命名 |
+
+**理由**：v3 的原生能力（工具结果卸载、媒体卸载、durable queue、guardrails）
+正好覆盖了本项目 Harness 层计划自研的一部分功能 —— **能用框架原生能力解决的，
+不要自己造**。自研部分只保留框架没有的：业务级质量护栏与熵减 GC。
