@@ -4,11 +4,16 @@
     uv run zhixun run --dry-run            # 干跑一次周报流水线
     uv run zhixun serve                    # 启动 API 服务
 
-    # ---- 第二篇新增：Agent 调试三件套 ----
+    # ---- 第二篇：Agent 调试三件套 ----
     uv run zhixun agents --list            # 列出全部 Agent、模型档位与提示词版本
     uv run zhixun agents --audit           # 提示词治理自检（建议挂进 CI）
     uv run zhixun agents --show-prompt analyst   # 打印渲染后的完整提示词（无需 API key）
     uv run zhixun agents --role collector --message "抓一下本周 AI 开源项目"
+
+    # ---- 第三篇：工具调试三件套 ----
+    uv run zhixun tools --list             # 列出工具授权表（谁被授予了什么）
+    uv run zhixun tools --builtin          # 内置工具包可用性（缺哪些可选依赖）
+    uv run zhixun tools --call fetch_trending_repos --arg days=7 --arg limit=3
 """
 
 from __future__ import annotations
@@ -117,6 +122,77 @@ def _parse_vars(pairs: list[str] | None) -> dict[str, str]:
     return out
 
 
+# ---------------------------------------------------------------- tools
+
+
+def _coerce(value: str) -> object:
+    """把命令行字符串尽力转成标量类型（int / float / bool / str）。"""
+    low = value.lower()
+    if low in ("true", "false"):
+        return low == "true"
+    for cast in (int, float):
+        try:
+            return cast(value)
+        except ValueError:
+            continue
+    return value
+
+
+def _cmd_tools(args: argparse.Namespace) -> int:
+    """工具调试三件套：授权表 / 内置可用性 / 直接调用。"""
+    from zhixun.tools import TOOL_GROUPS, get_tools
+    from zhixun.tools.guards import budget_snapshot, reset_budget
+
+    # 1) 内置工具包可用性（缺哪些可选依赖）
+    if args.builtin or not any((args.call, args.list)):
+        from zhixun.tools.builtin import available_builtins, unavailable_builtins
+
+        print(f"\n本机可用的 Agno 内置工具包：{', '.join(available_builtins()) or '(无)'}")
+        for name, hint in unavailable_builtins().items():
+            print(f"  ⚠️ {name:<12} 缺少依赖 → {hint}")
+        if not args.call and not args.list:
+            return 0
+
+    # 2) 授权表：谁能调用什么
+    if args.list or not args.call:
+        from zhixun.tools import TOOL_GROUPS, describe_toolsets
+
+        print("\n===== 工具授权表（最小权限）=====")
+        header = f"{'角色':<12} {'数量':<6} {'工具':<64} 声明"
+        print(header)
+        print("-" * len(header))
+        for row in describe_toolsets():
+            print(f"{row['role']:<12} {row['count']:<6} {row['tools']:<64} {row['declared']}")
+            if row["degraded"] != "-":
+                print(f"{'':<12} {'':<6} ⚠️ 依赖降级：{row['degraded']}")
+        print(f"\n工具组：{', '.join(sorted(TOOL_GROUPS))}")
+        if not args.call:
+            return 0
+
+    # 3) 直接调用一个工具（真联网，注意会消耗真实配额）
+    name = args.call
+    all_tools = {t.name: t for t in get_tools(*TOOL_GROUPS)}
+    if name not in all_tools:
+        print(f"未知工具：{name}。可用：{', '.join(sorted(all_tools))}")
+        return 2
+
+    kwargs = {k: _coerce(v) for k, v in _parse_vars(args.arg).items()}
+    reset_budget()
+    print(f"\n[调用] {name}  参数={kwargs or '(无)'}")
+    print(f"工具预算：{budget_snapshot()}")
+    try:
+        # 走 entrypoint 直接调用底层函数，绕过 Agent —— 便于单点调试
+        result = all_tools[name].entrypoint(**kwargs)
+    except Exception as exc:  # noqa: BLE001 - CLI 要把异常打给人看，而不是抛栈
+        print(f"\n❌ {type(exc).__name__}: {exc}")
+        return 1
+
+    import json
+
+    print("\n" + json.dumps(result, ensure_ascii=False, indent=2)[:4000])
+    return 0
+
+
 def main() -> int:
     configure_logging()
 
@@ -141,6 +217,13 @@ def main() -> int:
     p_agents.add_argument("--role", help="要运行的 Agent role")
     p_agents.add_argument("--message", help="交给 Agent 的任务描述")
     p_agents.set_defaults(func=_cmd_agents)
+
+    p_tools = sub.add_parser("tools", help="工具调试：授权表 / 内置可用性 / 直接调用")
+    p_tools.add_argument("--list", action="store_true", help="列出工具授权表")
+    p_tools.add_argument("--builtin", action="store_true", help="列出内置工具包可用性")
+    p_tools.add_argument("--call", metavar="NAME", help="直接调用某个工具（真联网）")
+    p_tools.add_argument("--arg", action="append", metavar="k=v", help="调用参数")
+    p_tools.set_defaults(func=_cmd_tools)
 
     args = parser.parse_args()
     return int(args.func(args))

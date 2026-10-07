@@ -13,15 +13,22 @@
   **LLM 的不确定性被收敛在 schema 边界内**
 
 第 2 篇：落地提示词与输出契约。
-第 3 篇：注入 `zhixun.tools.github` 等采集工具。
+第 3 篇：注入 `zhixun.tools` 的采集工具（github + search + hackernews）。
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from zhixun.agents.base import AgentSpec, build_agent, spec_from_prompt
+from zhixun.config.logging import get_logger
 from zhixun.config.settings import settings
+from zhixun.tools import resolve_toolset
+
+logger = get_logger(__name__)
 
 
 class RawItem(BaseModel):
@@ -52,11 +59,12 @@ COLLECTOR_SPEC: AgentSpec = spec_from_prompt(
 )
 
 
-def build_collector(*, max_items: int | None = None, **overrides: object) -> object:
+def build_collector(*, max_items: int | None = None, with_tools: bool = True, **overrides: object) -> Any:
     """构建采集员 Agent。
 
     Args:
         max_items: 本次采集条数上限（覆盖配置默认值）
+        with_tools: 是否挂载采集工具。默认开启；测试里关掉可以完全离线跑。
     """
     spec = COLLECTOR_SPEC
     if max_items is not None:
@@ -66,5 +74,18 @@ def build_collector(*, max_items: int | None = None, **overrides: object) -> obj
             output_schema=CollectResult,
             variables={"max_items": max_items},
         )
-    # TODO(第 3 篇): 注入 GitHub / HN / arXiv 采集工具
+
+    if with_tools:
+        # 按角色取工具，而不是手写一份工具清单 —— 授权集中在 tools/__init__.py 里
+        resolved = resolve_toolset("collector")
+        # 用 replace 复制一份，绝不原地改模块级常量（否则第二次调用会拿到脏数据）
+        spec = replace(spec, tools=resolved.tools)
+        if resolved.missing:
+            # 降级不是错误，但必须留痕：第 8 篇的评估要能看出"这周少了哪个信源"
+            logger.warning(
+                "collector.tools_degraded",
+                missing=resolved.missing,
+                loaded=resolved.names,
+            )
+
     return build_agent(spec, **overrides)

@@ -36,6 +36,7 @@ from zhixun.config.llm import Tier, get_model
 from zhixun.config.logging import get_logger
 from zhixun.config.settings import settings
 from zhixun.prompts import load_prompt
+from zhixun.tools.guards import reset_budget
 
 logger = get_logger(__name__)
 
@@ -191,13 +192,19 @@ def extract_content(output: Any) -> Any:
 
 
 def run_text(agent: Any, message: str | Any, **kwargs: Any) -> str:
-    """同步跑一次并把结果转成字符串（脚本 / CLI / 测试用）。"""
+    """同步跑一次并把结果转成字符串（脚本 / CLI / 测试用）。
+
+    每次运行前重置工具调用预算 —— 预算是"一轮任务"的资源上限，
+    不是"Agent 生命周期"的上限（详见第 3 篇的 Harness 埋点 ④）。
+    """
+    reset_budget()
     output = agent.run(message, **kwargs)
     return content_to_text(extract_content(output))
 
 
 async def arun_text(agent: Any, message: str | Any, **kwargs: Any) -> str:
     """异步跑一次并把结果转成字符串（Workflow 步骤用）。"""
+    reset_budget()
     output = await agent.arun(message, **kwargs)
     return content_to_text(extract_content(output))
 

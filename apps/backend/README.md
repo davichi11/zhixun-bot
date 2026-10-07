@@ -18,13 +18,43 @@ uv run zhixun agents --list
 uv run zhixun agents --audit                  # 提示词治理自检，建议挂 CI
 uv run zhixun agents --show-prompt analyst    # 打印渲染后的完整提示词
 
-# 4. 跑一次干运行（不发布）
+# 4. 看一眼工具授权表与内置工具可用性（不需要联网）
+uv run zhixun tools --list
+uv run zhixun tools --builtin                 # 缺哪些可选依赖，会给出 pip 提示
+
+# 5. 单独调一个工具（真联网）
+uv run zhixun tools --call fetch_trending_repos --arg days=7 --arg limit=3
+
+# 6. 跑一次干运行（不发布）
 uv run zhixun run --dry-run
 
-# 5. 启动 API
+# 7. 启动 API
 uv run zhixun serve --reload
 #   文档：http://127.0.0.1:8000/docs
 ```
+
+## 工具系统（第 3 篇）
+
+工具**按角色授权**，不存在"全局工具表"（理由见 ADR-008）：
+
+| 角色 | 授予的工具 |
+|---|---|
+| `collector` | `fetch_trending_repos` / `get_repo_readme` / `web_search` / `hackers_news` |
+| `analyst` | （无 —— 刻意的） |
+| `writer` | （无 —— 刻意的） |
+| `editor` | `web_search` / `fetch_webpage_markdown` |
+| `publisher` | `publish_draft`（唯一写操作） |
+
+三层护栏（理由见 ADR-009）：
+
+```
+tools/guards.py
+├── clamp_int / clamp_text     ① 参数钳制：能自动纠正的，不报错
+├── assert_url_allowed         ② 硬拦截：内网/元数据地址直接抛，不可重试
+└── audit_tool_call (pre_hook) ③ 调用配额：超预算抛 AgentRunException，物理阻断
+```
+
+联网工具一律走 `tools/http.py`（统一重试 + 错误分类 + 抖动），**禁止直接 `httpx.get`**。
 
 ## 提示词工程（第 2 篇）
 
@@ -56,7 +86,7 @@ RUN_E2E=1 uv run pytest -m e2e # 端到端（需要真实 LLM）
 | `config/` | 全局配置、日志、模型工厂（唯一读环境变量的地方） | 第 1 篇 |
 | `prompts/` | 提示词模板与加载器（front matter + 变量注入） | 第 2 篇 |
 | `agents/` | 采集员 / 分析师 / 写手 / 编辑 / 平台写手 Team | 第 2、5 篇 |
-| `tools/` | GitHub、搜索、抓取、发布等工具 | 第 3 篇 |
+| `tools/` | 工具系统：`errors.py`（错误分类）`http.py`（重试）`guards.py`（护栏）`github.py` `search.py` `scraper.py` `publisher.py` + `builtin/`（可选依赖降级） | 第 3 篇 |
 | `knowledge/` | 知识层：`memory/`（去重、压缩）+ `rag/`（向量检索）+ `unified_retriever` | 第 4 篇 |
 | `workflows/` | 周报主流程与六个步骤节点 | 第 5 篇 |
 | `harness/` | 驾驭层：`context/` `guards/` `entropy/` 三大支柱 | 第 7 篇 |

@@ -68,6 +68,24 @@ class Settings(BaseSettings):
     github_token: str = ""
     collector_max_items: int = 30
 
+    # ------------------------------------------------------------ 工具层（第 3 篇）
+    # 单次工具调用的超时与重试。三个数字构成"退避曲线"：
+    # 第 n 次重试等待 tool_retry_base_delay * 2^(n-1)，再叠加 0~100% 抖动
+    tool_timeout_seconds: float = 15.0
+    tool_max_attempts: int = 3
+    tool_retry_base_delay: float = 0.5
+    # 单次 Agent 运行允许的工具调用总次数（Harness「机械强制」第一道闸）
+    tool_call_budget: int = 12
+    # 单个工具结果的最大字符数（超出即截断，防上下文爆炸）
+    tool_result_max_chars: int = 16_000
+
+    # 网页抓取用 Jina Reader（免费，直接返回 Markdown，无需 API key）
+    jina_reader_base_url: str = "https://r.jina.ai/"
+    jina_search_base_url: str = "https://s.jina.ai/"
+    jina_api_key: str = ""
+    # 抓取目标允许的域名后缀白名单（空列表 = 不限制，仅校验协议与内网地址）
+    scraper_domain_allowlist: list[str] = []
+
     # ------------------------------------------------------------ 调度（第 5 篇）
     scheduler_enabled: bool = False
     weekly_report_cron: str = "0 9 * * 1"  # 每周一 09:00
