@@ -56,6 +56,35 @@ tools/guards.py
 
 联网工具一律走 `tools/http.py`（统一重试 + 错误分类 + 抖动），**禁止直接 `httpx.get`**。
 
+## 知识层（第 4 篇）
+
+「记忆」（去重）和「RAG」（风格）是同一层的两种形态，对外只暴露 `unified_retriever`（ADR-011）：
+
+```python
+from zhixun.knowledge import get_retriever
+
+retriever = get_retriever()
+
+# 1) 查"我该知道什么"
+ctx = await retriever.retrieve("本周 AI 开源周报", need_style=True)
+
+# 2) 按角色选披露档位渲染（渐进式披露，ADR-015）
+prompt_block = ctx.render(detail_level="full")     # 写手用 full，采集员用 summary
+
+# 3) 过滤重复（两段式：URL 规范化 → 标题语义，ADR-012）
+fresh, dropped = await retriever.filter_duplicates(candidates)
+```
+
+```bash
+uv run zhixun knowledge                 # 管道配置 + 知识层状态
+uv run zhixun knowledge --ingest        # 把 data/history/ 入库（切片→Embedding→索引）
+uv run zhixun knowledge --search "混合检索怎么实现"
+uv run zhixun knowledge --check-dup "Agno 智能体框架" --url https://github.com/agno-agi/agno
+```
+
+**零依赖也能跑**：没装 `lancedb` 自动降级为内存向量库；
+`EMBEDDING_PROVIDER=hash` 启用确定性 HashEmbedder（无语义能力，仅供离线与去重兜底）。
+
 ## 提示词工程（第 2 篇）
 
 提示词一律外置为模板，**不允许内联在 Python 里**（理由见 ADR-006）：
@@ -87,7 +116,7 @@ RUN_E2E=1 uv run pytest -m e2e # 端到端（需要真实 LLM）
 | `prompts/` | 提示词模板与加载器（front matter + 变量注入） | 第 2 篇 |
 | `agents/` | 采集员 / 分析师 / 写手 / 编辑 / 平台写手 Team | 第 2、5 篇 |
 | `tools/` | 工具系统：`errors.py`（错误分类）`http.py`（重试）`guards.py`（护栏）`github.py` `search.py` `scraper.py` `publisher.py` + `builtin/`（可选依赖降级） | 第 3 篇 |
-| `knowledge/` | 知识层：`memory/`（去重、压缩）+ `rag/`（向量检索）+ `unified_retriever` | 第 4 篇 |
+| `knowledge/` | 知识层：`memory/`（去重、渐进式披露）+ `rag/`（分词/BM25、Embedding、向量库、混合检索）+ `ingest.py` + `unified_retriever` | 第 4 篇 |
 | `workflows/` | 周报主流程与六个步骤节点 | 第 5 篇 |
 | `harness/` | 驾驭层：`context/` `guards/` `entropy/` 三大支柱 | 第 7 篇 |
 | `api/` | HTTP 接口（选题 / 草稿 / 流程 / 调度） | 第 5、9 篇 |

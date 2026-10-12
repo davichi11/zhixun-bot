@@ -14,6 +14,12 @@
     uv run zhixun tools --list             # 列出工具授权表（谁被授予了什么）
     uv run zhixun tools --builtin          # 内置工具包可用性（缺哪些可选依赖）
     uv run zhixun tools --call fetch_trending_repos --arg days=7 --arg limit=3
+
+    # ---- 第四篇：知识层调试四件套 ----
+    uv run zhixun knowledge --stats        # 知识层状态（向量库/索引/已发布条目）
+    uv run zhixun knowledge --ingest       # 把历史文章目录入库（切片→Embedding→索引）
+    uv run zhixun knowledge --search "混合检索怎么实现"
+    uv run zhixun knowledge --check-dup agno-agi/agno --url https://github.com/agno-agi/agno
 """
 
 from __future__ import annotations
@@ -193,6 +199,128 @@ def _cmd_tools(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- knowledge
+
+
+def _cmd_knowledge(args: argparse.Namespace) -> int:
+    """知识层调试四件套：状态 / 入库 / 检索 / 去重自检。"""
+    import asyncio
+
+    from zhixun.knowledge.ingest import describe_pipeline, ingest_history
+
+    wants_ingest = bool(args.ingest)
+
+    # 1) 管道配置（不执行，纯展示）
+    if args.stats or not any((wants_ingest, args.search, args.check_dup)):
+        print("\n===== 知识层管道 =====")
+        for key, value in describe_pipeline().items():
+            print(f"  {key:14s}: {value}")
+
+    if not any((wants_ingest, args.search, args.check_dup)):
+        return _print_knowledge_stats()
+
+    # 2) 入库
+    if wants_ingest:
+        result = asyncio.run(ingest_history(args.dir))
+        print(f"\n===== 入库完成（{result.elapsed_ms}ms）=====")
+        print(f"  {result.summary()}")
+        if not result.chunks:
+            print("  ⚠️ 没有读到任何文章。用 --dir 指定历史文章目录。")
+        return 0
+
+    # 3) 检索
+    if args.search:
+        from zhixun.knowledge import get_retriever
+        from zhixun.knowledge.rag.vector_store import get_vector_store
+
+        # 内存后端是**进程内**的：上一个进程入库的数据这里读不到。
+        # 所以先探一下，空库就顺手入库一次 —— 让 CLI 开箱可用。
+        probe = asyncio.run(get_vector_store().all_records())
+        if not probe:
+            print("（索引为空，先执行一次自动入库 —— 内存后端不跨进程持久化）")
+            asyncio.run(ingest_history(args.dir))
+
+        ctx = asyncio.run(get_retriever().retrieve(args.search, need_dedup=True, need_style=True))
+
+        print(f'\n===== 检索："{args.search}" =====')
+        if not ctx.style_samples:
+            print("  （无命中）")
+        for i, s in enumerate(ctx.style_samples, start=1):
+            print(f"\n  [{i}] RRF={s.score:.5f}  {s.article_id}")
+            print(f"      {s.title}")
+            head = s.excerpt[:120].replace("\n", " ")
+            print(f"      {head}…")
+
+        print(
+            f"\n===== 渐进式披露：三档对比"
+            f"（项目 {len(ctx.published_projects)} 条 / 范文 {len(ctx.style_samples)} 篇）====="
+        )
+        from zhixun.knowledge.memory.compressor import estimate_tokens
+
+        for level in ("summary", "standard", "full"):
+            rendered = ctx.render(detail_level=level)
+            print(f"  {level:9s} {estimate_tokens(rendered):>6d} tokens")
+        return 0
+
+    # 4) 去重自检
+    if args.check_dup:
+        from zhixun.knowledge import get_retriever
+
+        retriever = get_retriever()
+        ctx = asyncio.run(retriever.retrieve("dedup", need_dedup=True))
+        published = ctx.published_projects
+
+        print("\n===== 去重判定 =====")
+        print(f"  候选标题: {args.check_dup}")
+        print(f"  候选 URL : {args.url or '(无)'}")
+
+        if not published:
+            verdict = None
+        else:
+            verdict = asyncio.run(
+                retriever._dedup.check(
+                    url=args.url or "",
+                    title=args.check_dup,
+                    published=published,
+                    embedder=retriever._embedder,
+                )
+            )
+            print(f"  命中阶段 : {verdict.stage or '(未命中)'}")
+            print(f"  判定     : {'重复' if verdict.is_duplicate else '不重复'}")
+            print(f"  相似度   : {verdict.similarity}")
+            print(f"  原因     : {verdict.reason}")
+        print(f"  历史库规模: {len(published)} 条" + ("（空库，恒判定不重复）" if not published else ""))
+        return 0
+
+    return 0
+
+
+def _print_knowledge_stats() -> int:
+    """打印知识层状态（向量库 + 索引 + 已发布条目）。"""
+    import asyncio
+
+    from zhixun.db.session import dispose_db, init_db
+    from zhixun.knowledge import get_retriever
+    from zhixun.knowledge.memory.storage import MemoryStore
+
+    async def _run() -> None:
+        await init_db()
+        retriever = get_retriever()
+        stats = await retriever._retriever.stats()
+        store = MemoryStore()
+        print("\n===== 知识层状态 =====")
+        print(f"  向量库后端 : {stats['backend']}")
+        print(f"  已入库切片 : {stats['chunks']}")
+        print(f"  覆盖文章数 : {stats['articles']}")
+        print(f"  索引字符数 : {stats['chars_indexed']}")
+        print(f"  已发布项目 : {await store.count_published()}")
+        print(f"  关注方向   : {'、'.join(await store.list_focus_topics())}")
+        await dispose_db()
+
+    asyncio.run(_run())
+    return 0
+
+
 def main() -> int:
     configure_logging()
 
@@ -224,6 +352,15 @@ def main() -> int:
     p_tools.add_argument("--call", metavar="NAME", help="直接调用某个工具（真联网）")
     p_tools.add_argument("--arg", action="append", metavar="k=v", help="调用参数")
     p_tools.set_defaults(func=_cmd_tools)
+
+    p_know = sub.add_parser("knowledge", help="知识层调试：状态 / 入库 / 检索 / 去重自检")
+    p_know.add_argument("--stats", action="store_true", help="知识层状态与管道配置")
+    p_know.add_argument("--ingest", action="store_true", help="把历史文章目录入库")
+    p_know.add_argument("--dir", help="历史文章目录（默认取配置）")
+    p_know.add_argument("--search", metavar="QUERY", help="混合检索一篇范文")
+    p_know.add_argument("--check-dup", metavar="TITLE", help="对给定标题做一次去重判定")
+    p_know.add_argument("--url", help="配合 --check-dup 使用的 URL")
+    p_know.set_defaults(func=_cmd_knowledge)
 
     args = parser.parse_args()
     return int(args.func(args))

@@ -59,10 +59,24 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------ 向量库
     vector_db_uri: str = str(BACKEND_ROOT / ".lancedb")
     vector_table_articles: str = "historical_articles"
+    # lancedb 是可选依赖；缺失时自动降级为内存实现（几百篇规模完全够用）
+    vector_backend: Literal["lancedb", "memory"] = "memory"
 
     # ------------------------------------------------------------ 知识层（第 4 篇）
     dedup_similarity_threshold: float = 0.85
     rag_top_k: int = 5
+    # Embedding：openai = 有语义；hash = 零依赖确定性降级（无语义，仅供离线与去重兜底）
+    embedding_provider: Literal["openai", "hash"] = "openai"
+    embedding_model: str = "text-embedding-3-small"
+    embedding_hash_dim: int = 512
+    # 去重时最多拿多少条历史项目参与标题相似度比对（越多越准，也越贵）
+    dedup_max_candidates: int = 500
+    # 历史文章目录（风格范文来源），相对 backend 根目录
+    history_articles_dir: str = "data/history"
+    # 渐进式披露：默认注入多少条范文
+    context_style_samples: int = 3
+    # 本账号的关注方向（运营策略，属于配置而不是业务数据）
+    focus_topics: list[str] = ["大模型应用", "Agent 工程", "推理优化", "开源生态"]
 
     # ------------------------------------------------------------ 采集（第 3 篇）
     github_token: str = ""

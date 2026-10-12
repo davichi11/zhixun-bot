@@ -44,9 +44,20 @@ async def test_empty_harness_chain_passes_through() -> None:
     assert out.blocked is False
 
 
-async def test_unified_retriever_returns_empty_context() -> None:
-    """第 1 篇还没有接真实存储，检索应返回空上下文而不是报错。"""
-    ctx = await get_retriever().retrieve("本周 AI 开源周报", need_style=True)
-    assert ctx.published_projects == []
-    assert ctx.style_samples == []
+async def test_unified_retriever_shape_without_submodules() -> None:
+    """知识层**未装配任何子层**时，必须安全返回空上下文而不是抛异常。
+
+    注意不要在这里调 `get_retriever()` —— 它会装配真实子层，
+    从而碰到数据库和 Embedding API，违反"单元测试绝不联网、绝不落库"的约定。
+    真实装配的测试见 `tests/unit/test_knowledge.py`。
+    """
+    from zhixun.knowledge import UnifiedRetriever
+
+    ctx = await UnifiedRetriever().retrieve("本周 AI 开源周报", need_style=True)
+    assert ctx.is_empty()
     assert isinstance(ctx.render(), str)
+
+
+def test_retriever_factory_is_callable() -> None:
+    """装配入口存在且可调用（不真的执行，避免触库）。"""
+    assert callable(get_retriever)
