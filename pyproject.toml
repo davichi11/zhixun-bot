@@ -3,6 +3,16 @@ name = "zhixun-bot"
 version = "0.1.0"
 description = "智讯助手 —— AI 资讯聚合与内容创作智能体（Agno 实战系列配套工程）"
 requires-python = ">=3.11"
+dependencies = [
+    "agno==3.1.2",
+    "asyncpg==0.32.0",
+    "fastapi==0.143.0",
+    "lancedb==0.40.0",
+    "pydantic==2.14.1",
+    "python-dotenv==1.2.4",
+    "sqlalchemy==2.1.4",
+    "uvicorn==0.54.0",
+]
 
 # 这是一个 uv workspace 根，只做统一管理；真正的依赖在 apps/backend 下声明。
 # 用法：

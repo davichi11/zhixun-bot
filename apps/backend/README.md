@@ -2,7 +2,7 @@
 
 Agno 业务核心：Agent 定义、工具系统、知识层、流水线、Harness 驾驭层、HTTP API 与调度器。
 
-> 框架基线：**Agno 3.x**（`agno>=3.0.9`）。v3 是破坏性版本，升级前请先读 `../../docs/architecture.md` 的 ADR-007。
+> 框架基线：**Agno 3.1.x**（`agno>=3.1.2`）。v3 是破坏性版本，升级前请先读 `../../docs/architecture.md` 的 ADR-007 与 ADR-016~018。
 
 ## 快速开始
 
@@ -25,13 +25,40 @@ uv run zhixun tools --builtin                 # 缺哪些可选依赖，会给�
 # 5. 单独调一个工具（真联网）
 uv run zhixun tools --call fetch_trending_repos --arg days=7 --arg limit=3
 
-# 6. 跑一次干运行（不发布）
-uv run zhixun run --dry-run
+# 5. 跑一次干运行（不发布、不调 LLM）
+uv run zhixun run --dry-run --skip-review --issue 42
 
-# 7. 启动 API
+# 6. 正式跑（会在"人工审校"处挂起）
+uv run zhixun run --dry-run --issue 43
+#   → 提示：uv run zhixun approve <run_id> --session-id <sid>
+
+# 7. 人工审批（通过 / 驳回）
+uv run zhixun approve <run_id> --session-id <sid>
+uv run zhixun approve --latest --reject --feedback "数据不准"
+
+# 8. 启动 API
 uv run zhixun serve --reload
 #   文档：http://127.0.0.1:8000/docs
 ```
+
+## 流水线编排（第 5 篇）
+
+**Workflow 主导 + Team 局部嵌套**（ADR-002 / ADR-016~018）：
+
+```
+① 采集 → ② 筛选 → [Condition: 候选 ≥ 3 → ③ 摘要 + ④ 改写（Team）/ else 显式收尾]
+                    → ⑤ 审校（顶层 HumanReview，⏸ 挂起等人工）→ ⑥ 发布
+```
+
+两个**实测得到**的框架行为（都有回归测试守着）：
+
+| 行为 | 后果 | 本项目的处理 |
+|---|---|---|
+| `HumanReview` 嵌在 `Condition` 内**不生效** | 会静默自动发布且不报错 | 审校步骤提到顶层 |
+| `on_reject="skip"` **不阻止后续步骤** | 人工驳回后发布仍会执行 | 改用 `on_reject="cancel"` |
+
+另外：`Step.max_retries` **默认 3 次**，且失败步骤的后续步骤总会执行 ——
+**"框架会替你把住发布这道门"是错觉，闸门必须自己写。**
 
 ## 工具系统（第 3 篇）
 
@@ -117,7 +144,7 @@ RUN_E2E=1 uv run pytest -m e2e # 端到端（需要真实 LLM）
 | `agents/` | 采集员 / 分析师 / 写手 / 编辑 / 平台写手 Team | 第 2、5 篇 |
 | `tools/` | 工具系统：`errors.py`（错误分类）`http.py`（重试）`guards.py`（护栏）`github.py` `search.py` `scraper.py` `publisher.py` + `builtin/`（可选依赖降级） | 第 3 篇 |
 | `knowledge/` | 知识层：`memory/`（去重、渐进式披露）+ `rag/`（分词/BM25、Embedding、向量库、混合检索）+ `ingest.py` + `unified_retriever` | 第 4 篇 |
-| `workflows/` | 周报主流程与六个步骤节点 | 第 5 篇 |
+| `workflows/` | 周报主流程：`steps/`（六个步骤）+ `weekly_report.py`（Workflow 编排 + HITL） | 第 5 篇 |
 | `harness/` | 驾驭层：`context/` `guards/` `entropy/` 三大支柱 | 第 7 篇 |
 | `api/` | HTTP 接口（选题 / 草稿 / 流程 / 调度） | 第 5、9 篇 |
 | `scheduler/` | APScheduler 定时任务 | 第 5 篇 |

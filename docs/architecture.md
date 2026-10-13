@@ -267,3 +267,93 @@ GitHub 搜索直接返回 **422**，被 `classify_status` 正确判为"不可重
 
 **回归测试**：`test_render_tiers_are_ordered_by_cost` 断言三档 token 数**严格递增** ——
 否则"默认给最少信息"这个承诺会悄悄失效。
+
+---
+
+## ADR-016：HITL 必须作为流程内节点，且必须落在顶层 Step
+
+**决策**：人工审校用 Agno 的 `Step(human_review=HumanReview(...))` 实现，
+且**该 Step 必须是 `Workflow.steps` 的顶层元素**，不能嵌在 `Condition` 里。
+
+**实测证据（Agno 3.1.2 对照实验）**：
+
+```
+Step(name="审校", human_review=...)                 → status=paused     pending=1
+Condition(steps=[Step(..., human_review=...)])      → status=completed  pending=0
+```
+
+**为什么重要**：如果把审校步骤放进 `Condition.steps`，
+流水线会**静默地永远自动发布未经审校的稿件，且不报任何错**。
+本项目差点上线这个 bug，靠对照实验才发现。
+
+**代价**：结构必须拆成"条件在前、HITL 在后"：
+```
+① 采集 → ② 筛选 → [Condition: 够不够写 → ③ 摘要 + ④ 改写 / else 收尾]
+                    → ⑤ 审校（顶层 HumanReview）→ ⑥ 发布
+```
+
+**回归防护**：`tests/unit/test_workflow_v2.py::test_workflow_structure_puts_review_at_top_level`
+
+---
+
+## ADR-017：不可逆步骤的上游默认值必须逐个审查
+
+**决策**：`publish` 前的人工审校用 `on_reject="cancel"`（不是默认的 `skip`）。
+
+**实测证据**：
+
+| `on_reject` | 驳回后 status | 发布步骤是否执行 |
+|---|---|---|
+| `skip`（直觉上的默认值） | `completed` | **执行了** ⚠️ |
+| **`cancel`** | **`cancelled`** | **未执行** ✅ |
+
+**理由**：`skip` 的语义是"跳过这个步骤，继续往下走"，
+而下一个步骤正好是发布工具 —— **人工点了驳回，稿件照样会被发出去**。
+
+**延伸结论**：Agno 的 `Step.max_retries` **默认是 3（不是 0）**，
+且无论 `skip_on_failure` 怎么配，**失败步骤的后续步骤都会执行**。
+所以"框架会替你把住发布这道门"是个错觉 —— 闸门必须自己写。
+
+> 一般性原则：**凡是不可逆的步骤，先确认它上游每个参数的默认值，
+> 再决定要不要覆盖。** 大多数人不会去读每个参数的语义，
+> 而默认值往往偏向"顺利跑完"，而不是"偏向安全"。
+
+---
+
+## ADR-018：HITL 必须有 db，开发态也不能省
+
+**决策**：`Workflow(db=SqliteDb(...))` 在开发态**强制启用**，
+不使用"无 db 的纯内存模式"。
+
+**理由**：HITL 的暂停状态（`step_requirements`）保存在 Agno db 里。
+没有 db → 流程挂起后**再也恢复不了** → 每次人工审批都要重跑整条流水线。
+
+**附带发现**：`Workflow.aget_run_output(run_id)` 在未给 `session_id` 时
+会走到 `aget_session(None)` 并抛 `No session_id provided`。
+**`session_id` 是必需参数，不是可选的** —— CLI 因此需要 `--session-id`
+或 `--latest`（自动定位最近待审批会话）。
+
+---
+
+## ADR-019：状态枚举的字符串形态不统一，一律走辅助函数
+
+**决策**：所有 `RunStatus` 的字符串判断统一走 `_is_paused()` 等辅助函数，
+内部做 `.lower()`，**禁止直接 `endswith("paused")`**。
+
+**实测证据**：
+
+```
+刚从 run() 返回：      str(out.status)  →  "RunStatus.paused"   （枚举 repr，小写）
+从 db 反序列化出来：    str(run.status)  →  "PAUSED"             （大写）
+```
+
+**后果**：用 `endswith("paused")` 判断时，`find_latest_pending_run()`
+在内存里测是好的，实际从 db 读出来却永远匹配不上 ——
+`approve --latest` 静默返回"没找到待审批的 run"，**不报任何错**。
+
+**一般性原则**：跨"内存对象"与"序列化产物"边界时，
+**不要假设枚举的字符串形态一致**。归一化要在边界处做，且要有测试守着
+（`test_is_paused_handles_both_enum_shapes`）。
+
+**附带实测**：`db.get_sessions(session_type=...)` 必须传 `SessionType.WORKFLOW`
+枚举，传字符串 `"workflow"` 会抛 `'str' object has no attribute 'value'`。

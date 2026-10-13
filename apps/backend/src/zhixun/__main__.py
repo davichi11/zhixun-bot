@@ -20,6 +20,12 @@
     uv run zhixun knowledge --ingest       # 把历史文章目录入库（切片→Embedding→索引）
     uv run zhixun knowledge --search "混合检索怎么实现"
     uv run zhixun knowledge --check-dup agno-agi/agno --url https://github.com/agno-agi/agno
+
+    # ---- 第五篇：流水线 + 人工审批 ----
+    uv run zhixun run --dry-run --skip-review     # 全链路直跑（CI 用，不需要人工点）
+    uv run zhixun run --issue 42                  # 正式跑，会在"人工审校"处挂起
+    uv run zhixun approve <run_id>                # 人工点"通过"，恢复并发布
+    uv run zhixun approve <run_id> --reject --feedback "数据不准"   # 人工驳回
 """
 
 from __future__ import annotations
@@ -34,10 +40,77 @@ logger = get_logger("zhixun.cli")
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
-    from zhixun.workflows import run_weekly_report
+    """跑一次周报流水线（第 5 篇：交给 Agno Workflow 编排）。"""
+    from zhixun.workflows import describe_pending, dump_steps, run_weekly_report
 
-    state = asyncio.run(run_weekly_report(dry_run=args.dry_run))
-    logger.info("cli.run_done", run_id=state.run_id, dry_run=args.dry_run)
+    output = asyncio.run(
+        run_weekly_report(
+            dry_run=args.dry_run,
+            issue_no=args.issue,
+            skip_review=args.skip_review,
+        )
+    )
+    status = str(getattr(output, "status", "?")).split(".")[-1]
+    run_id = getattr(output, "run_id", None)
+    session_id = getattr(output, "session_id", None)
+
+    print(f"\n===== 流水线状态：{status} =====")
+    print(f"run_id={run_id}  session_id={session_id}")
+    print(dump_steps(output))
+
+    pending = describe_pending(output)
+    if "等待人工确认" in pending:
+        print(f"\n{pending}")
+        print(f"\n下一步：uv run zhixun approve {run_id} --session-id {session_id}   # 点通过")
+        print(f"        uv run zhixun approve {run_id} --latest --reject           # 点驳回")
+    return 0
+
+
+def _cmd_approve(args: argparse.Namespace) -> int:
+    """人工审批：恢复一个被挂起的 run。"""
+    from zhixun.workflows import approve, dump_steps, reject
+    from zhixun.workflows.weekly_report import (
+        build_weekly_report_workflow,
+        find_latest_pending_run,
+        get_workflow_db,
+    )
+
+    db = get_workflow_db()
+    if db is None:
+        print("❌ 没有数据库连接，无法恢复被挂起的 run（HITL 状态存在 db 里）。")
+        return 1
+
+    workflow = build_weekly_report_workflow(db=db)
+
+    run_id, session_id = args.run_id, args.session_id
+
+    # --latest（或没给 run_id）：自动定位最近一个待审批的会话
+    if args.latest or not run_id:
+        session_id, found_run = asyncio.run(find_latest_pending_run())
+        if session_id is None or found_run is None:
+            print("❌ 没有找到待审批的 run。用 `zhixun run --dry-run` 先跑一次。")
+            return 1
+        run_id = run_id or found_run
+        print(f"定位到待审批：run_id={run_id}  session_id={session_id}")
+    elif session_id is None:
+        print("❌ 需要 --session-id（或改用 --latest 自动定位）。")
+        return 1
+
+    output = asyncio.run(workflow.aget_run_output(run_id, session_id=session_id))
+    if output is None:
+        print(f"❌ 找不到 run：{run_id}（session={session_id}）")
+        return 1
+
+    if args.reject:
+        feedback = args.feedback or "内容需要修改"
+        print(f"\n===== 驳回（{feedback}）=====")
+        output = asyncio.run(reject(output, feedback=feedback, workflow=workflow))
+    else:
+        print("\n===== 人工确认通过 =====")
+        output = asyncio.run(approve(output, workflow=workflow))
+
+    print(f"status = {str(getattr(output, 'status', '?')).split('.')[-1]}")
+    print(dump_steps(output))
     return 0
 
 
@@ -328,8 +401,20 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_run = sub.add_parser("run", help="跑一次周报流水线")
-    p_run.add_argument("--dry-run", action="store_true", help="干跑，不真正发布")
+    p_run.add_argument("--dry-run", action="store_true", help="干跑，不调 LLM、不发布")
+    p_run.add_argument("--issue", type=int, help="第几期周报")
+    p_run.add_argument("--skip-review", action="store_true",
+                       help="跳过人工审校（仅与 --dry-run 搭配使用）")
     p_run.set_defaults(func=_cmd_run)
+
+    p_approve = sub.add_parser("approve", help="人工审批一个被挂起的 run")
+    p_approve.add_argument("run_id", nargs="?", help="待审批的 run_id")
+    p_approve.add_argument("--session-id", help="所属 session_id（--latest 可省略）")
+    p_approve.add_argument("--latest", action="store_true",
+                           help="自动定位最近一个待审批的会话")
+    p_approve.add_argument("--reject", action="store_true", help="驳回而不是通过")
+    p_approve.add_argument("--feedback", help="驳回理由（会写入 rejection_feedback）")
+    p_approve.set_defaults(func=_cmd_approve)
 
     p_serve = sub.add_parser("serve", help="启动 API 服务")
     p_serve.add_argument("--host", default="127.0.0.1")

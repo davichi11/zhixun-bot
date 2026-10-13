@@ -34,6 +34,24 @@ class RunResponse(BaseModel):
     run_id: str
     status: str
     dry_run: bool
+    issue_no: int | None = None
+
+
+class StepProgress(BaseModel):
+    """单步进度（前端进度条用）。"""
+
+    name: str
+    success: bool = False
+    paused: bool = False
+    content: str = ""
+
+
+class RunStatusResponse(BaseModel):
+    """流水线状态查询响应（第 5 篇：透传 Agno 的真实进度）。"""
+
+    runs: list[dict[str, Any]] = Field(default_factory=list)
+    steps: list[StepProgress] = Field(default_factory=list)
+    message: str = ""
 
 
 class ProjectOut(BaseModel):

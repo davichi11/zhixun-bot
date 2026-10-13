@@ -104,6 +104,13 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = False
     weekly_report_cron: str = "0 9 * * 1"  # 每周一 09:00
 
+    # ------------------------------------------------------------ 流水线（第 5 篇）
+    # Agno Workflow 的 db 文件。**HITL 的暂停状态存在这里**，
+    # 所以开发态也不能省 —— 没有它，流程挂起后无法恢复。
+    workflow_db: str = "agno_workflow.db"
+    # 候选少于这个数就不写一期（走 Condition 的 else 分支显式收尾）
+    min_candidates: int = 3
+
     # ------------------------------------------------------------ Agent 层（第 2 篇）
     # 提示词模板目录（相对 backend 根目录），支持按 env 覆盖做 A/B 实验
     prompts_dir: str = "src/zhixun/prompts"
