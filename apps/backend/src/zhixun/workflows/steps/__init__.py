@@ -39,6 +39,7 @@ from typing import Any
 from agno.workflow.types import StepInput, StepOutput
 
 from zhixun.config.logging import get_logger
+from zhixun.tools.publisher import publish_draft
 from zhixun.workflows.states import Draft, RawItem, ScoredItem, Summary
 
 logger = get_logger(__name__)
@@ -289,7 +290,7 @@ async def step_review(step_input: StepInput) -> StepOutput:
 
 
 async def step_publish(step_input: StepInput) -> StepOutput:
-    """⑥ 发布：真正推送到各平台。
+    """⑥ 发布：**排版 → 配图 → 推送**（第 6 篇：排版与配图都走 MCP）。
 
     **dry_run 是硬闸门** —— 不管上游状态如何，dry_run 绝不触发真实发布。
     这和第三篇 `publish_draft` 的 `approved_by_human` 是两道独立的闸。
@@ -304,10 +305,80 @@ async def step_publish(step_input: StepInput) -> StepOutput:
 
     published: list[str] = []
     for d in drafts:
-        published.append(d.get("platform", "?"))
-        logger.info("workflow.publish", platform=d.get("platform"), chars=len(d.get("content", "")))
+        # 1) 排版（MCP）：markdown → 目标平台格式
+        render = await _call_mcp_tool("render_markdown", markdown=d.get("content", ""),
+                                      platform=d.get("platform", "wechat"))
+        # 2) 配图（MCP）：公众号封面
+        cover = None
+        if d.get("platform") == "wechat":
+            cover = await _call_mcp_tool("generate_cover", title=d.get("title", ""))
 
-    return StepOutput(content=f"已发布到：{'、'.join(published)}")
+        # 3) 推送（内置工具，内部再委托 MCP 的 publish_draft）
+        out = publish_draft.entrypoint(
+            platform=d.get("platform", "wechat"),
+            title=d.get("title", ""),
+            content=d.get("content", ""),
+            approved_by_human=True,   # 上游 HumanReview 已放行
+        )
+        if isinstance(out, dict) and out.get("ok"):
+            published.append(f"{d.get('platform')}:{out.get('draft_id')}")
+        else:
+            logger.warning("workflow.publish_failed", platform=d.get("platform"), result=out)
+            published.append(f"{d.get('platform')}:失败")
+
+    return StepOutput(content=f"已发布：{'、'.join(published)}")
+
+
+async def _call_mcp_tool(tool_suffix: str, **kwargs: Any) -> dict[str, Any] | None:
+    """调用一个 MCP 工具（按名字后缀匹配，自动处理连接与关闭）。
+
+    返回 `None` 表示 MCP 不可用 —— 调用方**必须自己降级**，不能假设有结果。
+    """
+    import concurrent.futures
+
+    from zhixun.mcp import load_publisher_tools
+
+    async def _call() -> dict[str, Any] | None:
+        loaded = await load_publisher_tools()
+        if not loaded.ok:
+            return None
+        for toolkit in loaded.tools:
+            fns = getattr(toolkit, "functions", {}) or {}
+            name = next((n for n in fns if n.endswith(tool_suffix)), None)
+            if name is None:
+                continue
+            try:
+                raw = await fns[name].entrypoint(**kwargs)
+                return _parse_mcp(raw)
+            finally:
+                await toolkit.close()
+        return None
+
+    try:
+        # 步骤本身是 async，但 MCP 客户端在独立线程里更稳妥（见 tools/publisher.py 的注释）
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, _call()).result(timeout=60)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("workflow.mcp_tool_failed", tool=tool_suffix, error=str(exc))
+        return None
+
+
+def _parse_mcp(raw: Any) -> dict[str, Any]:
+    """解析 MCP 返回值（结构化 payload 优先）。"""
+    import json as _json
+
+    meta = getattr(raw, "metadata", None) or {}
+    if isinstance(meta.get("structured_content"), dict):
+        return meta["structured_content"]
+    content = getattr(raw, "content", None)
+    if isinstance(content, str):
+        try:
+            parsed = _json.loads(content)
+            if isinstance(parsed, dict):
+                return parsed
+        except _json.JSONDecodeError:
+            pass
+    return {}
 
 
 # ------------------------------------------------------------------ 步骤清单

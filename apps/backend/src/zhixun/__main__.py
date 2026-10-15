@@ -26,6 +26,11 @@
     uv run zhixun run --issue 42                  # 正式跑，会在"人工审校"处挂起
     uv run zhixun approve <run_id>                # 人工点"通过"，恢复并发布
     uv run zhixun approve <run_id> --reject --feedback "数据不准"   # 人工驳回
+
+    # ---- 第六篇：能力扩展 ----
+    uv run zhixun mcp --list            # MCP Server 注册表与可用性
+    uv run zhixun mcp --call render_markdown --arg markdown="# 标题" --arg platform=wechat
+    uv run zhixun skills --list         # 已沉淀的技能清单与按角色分配
 """
 
 from __future__ import annotations
@@ -394,6 +399,79 @@ def _print_knowledge_stats() -> int:
     return 0
 
 
+def _cmd_mcp(args: argparse.Namespace) -> int:
+    """MCP 调试：Server 注册表 / 真实调用。"""
+    from zhixun.mcp import describe_mcp_servers, load_mcp_tools
+
+    if not args.call:
+        print("\n===== MCP Server 注册表 =====")
+        for row in describe_mcp_servers():
+            mark = "✅" if row["ready"] else "⚠️"
+            print(f"  {mark} {row['name']:18s} {row['description']}")
+            print(f"      命令: {row['command']}")
+            if not row["enabled"]:
+                print("      状态: 已通过配置禁用")
+            if row["hint"]:
+                print(f"      安装: {row['hint']}")
+        return 0
+
+    async def _run() -> int:
+        loaded = await load_mcp_tools()
+        print(f"\n连接成功: {loaded.connected or '(无)'}")
+        if loaded.failed:
+            print(f"连接失败: {loaded.failed}")
+        if loaded.unavailable_reason:
+            print(f"不可用: {loaded.unavailable_reason}")
+            return 1
+
+        kwargs = {k: _coerce(v) for k, v in _parse_vars(args.arg).items()}
+        for toolkit in loaded.tools:
+            fns = getattr(toolkit, "functions", {}) or {}
+            name = next((n for n in fns if n.endswith(args.call) or n == args.call), None)
+            if name is None:
+                continue
+            print(f"[调用] {name}  参数={kwargs or '(无)'}")
+            raw = await fns[name].entrypoint(**kwargs)
+            import json as _json
+
+            payload = (getattr(raw, "metadata", None) or {}).get("structured_content")
+            if payload is None:
+                payload = getattr(raw, "content", "")
+            print("\n" + _json.dumps(payload, ensure_ascii=False, indent=2)[:3000]
+                  if not isinstance(payload, str) else payload[:3000])
+            await toolkit.close()
+            return 0
+
+        print(f"没有找到匹配 {args.call} 的工具。可用："
+              f"{[n for t in loaded.tools for n in getattr(t, 'functions', {})]}")
+        return 1
+
+    return asyncio.run(_run())
+
+
+def _cmd_skills(args: argparse.Namespace) -> int:
+    """技能调试：清单与按角色分配。"""
+    from zhixun.skills import describe_skills
+
+    info = describe_skills()
+    print("\n===== 技能清单 =====")
+    if not info.available:
+        print(f"  ⚠️ {info.error}")
+        return 1
+
+    header = f"{'技能':<18}{'字数':>6}  允许使用的工具"
+    print(f"  {header}")
+    print("  " + "-" * 70)
+    for row in info.detail:
+        print(f"  {row['name']:<18}{row['chars']:>6}  {row['allowed_tools']}")
+        print(f"  {'':<18}{'':>6}  {row['description']}")
+
+    print("\n===== 按角色分配（最小权限思路的延续）=====")
+    for role, names in info.by_agent.items():
+        print(f"  {role:<12} → {'、'.join(names) if names else '(无)'}")
+    return 0
+
+
 def main() -> int:
     configure_logging()
 
@@ -446,6 +524,16 @@ def main() -> int:
     p_know.add_argument("--check-dup", metavar="TITLE", help="对给定标题做一次去重判定")
     p_know.add_argument("--url", help="配合 --check-dup 使用的 URL")
     p_know.set_defaults(func=_cmd_knowledge)
+
+    p_mcp = sub.add_parser("mcp", help="MCP 调试：Server 清单 / 直接调用")
+    p_mcp.add_argument("--list", action="store_true", help="列出 MCP Server 注册表")
+    p_mcp.add_argument("--call", metavar="NAME", help="调用某个 MCP 工具（真连 Server）")
+    p_mcp.add_argument("--arg", action="append", metavar="k=v", help="调用参数")
+    p_mcp.set_defaults(func=_cmd_mcp)
+
+    p_skills = sub.add_parser("skills", help="技能调试：已沉淀的技能清单")
+    p_skills.add_argument("--list", action="store_true", help="列出全部技能与角色分配")
+    p_skills.set_defaults(func=_cmd_skills)
 
     args = parser.parse_args()
     return int(args.func(args))

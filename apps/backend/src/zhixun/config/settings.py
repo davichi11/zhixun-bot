@@ -75,6 +75,14 @@ class Settings(BaseSettings):
     history_articles_dir: str = "data/history"
     # 渐进式披露：默认注入多少条范文
     context_style_samples: int = 3
+
+    # ------------------------------------------------------------ MCP（第 6 篇）
+    # ⚠️ MCP Server 的启动命令**只来自这里**，不接受运行时注入 ——
+    # 它等于"在生产机器上执行任意进程"，风险等级与 SSRF 同级。
+    # 相对 backend 根目录；客户端会自动用 sys.executable 拼成完整命令。
+    mcp_publisher_server: str = "mcp_servers/zhixun_publisher/server.py"
+    # 关掉后发布能力自动降级为内置实现，不影响流水线运行
+    mcp_publisher_enabled: bool = True
     # 本账号的关注方向（运营策略，属于配置而不是业务数据）
     focus_topics: list[str] = ["大模型应用", "Agent 工程", "推理优化", "开源生态"]
 

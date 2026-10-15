@@ -114,11 +114,12 @@ def spec_from_prompt(
     )
 
 
-def build_agent(spec: AgentSpec, **overrides: Any) -> Any:
+def build_agent(spec: AgentSpec, *, with_skills: bool = True, **overrides: Any) -> Any:
     """按 AgentSpec 构建一个 Agno Agent。
 
     Args:
         spec: Agent 声明
+        with_skills: 是否按角色挂载 Skills（第 6 篇）。测试里关掉可得到完全离线的 Agent。
         **overrides: 临时覆盖 Agno Agent 的构造参数（主要给测试用）
 
     Returns:
@@ -127,6 +128,10 @@ def build_agent(spec: AgentSpec, **overrides: Any) -> Any:
     Notes:
         Harness 护栏在 `zhixun.harness.middlewares` 中以 middlewares / hooks 形式挂载，
         这里只负责把挂载点（`pre_hooks` / `post_hooks`）接出去，具体实现见第 7 篇。
+
+        **第二篇埋点③（可拆卸挂载点）在这里兑现**：
+        工具、Skills、Harness 钩子都从这个唯一出口接入，
+        所以"要不要挂、挂什么"永远是配置问题，不是散落在各处的硬编码。
     """
     from agno.agent import Agent
 
@@ -150,6 +155,24 @@ def build_agent(spec: AgentSpec, **overrides: Any) -> Any:
     }
     if spec.output_schema is not None:
         kwargs["output_schema"] = spec.output_schema
+
+    # ---- 第 6 篇：按角色挂载 Skills ----
+    # 延续第三篇"按角色最小权限"的思路：技能不是全局的，是按需的。
+    # 采集员不需要"公众号排版规范"，编辑不需要"封面设计"。
+    if with_skills:
+        try:
+            from zhixun.skills import skills_for_agent
+
+            collection = skills_for_agent(spec.role)
+            if collection is not None:
+                kwargs["skills"] = collection
+                logger.debug(
+                    "agent.skills_mounted",
+                    agent=spec.name,
+                    skills=collection.get_skill_names(),
+                )
+        except Exception as exc:  # noqa: BLE001 - 技能不可用不该让 Agent 起不来
+            logger.warning("agent.skills_mount_failed", agent=spec.name, error=str(exc))
 
     hooks = _harness_hooks(spec)
     if hooks:

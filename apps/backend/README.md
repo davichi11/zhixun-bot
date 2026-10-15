@@ -142,6 +142,8 @@ RUN_E2E=1 uv run pytest -m e2e # 端到端（需要真实 LLM）
 | `config/` | 全局配置、日志、模型工厂（唯一读环境变量的地方） | 第 1 篇 |
 | `prompts/` | 提示词模板与加载器（front matter + 变量注入） | 第 2 篇 |
 | `agents/` | 采集员 / 分析师 / 写手 / 编辑 / 平台写手 Team | 第 2、5 篇 |
+| `mcp_servers/` | MCP Server（发布/排版/封面），stdio 传输 | 第 6 篇 |
+| `skills/` | 沉淀的 Skills（SKILL.md：排版 / 核查 / 封面） | 第 6 篇 |
 | `tools/` | 工具系统：`errors.py`（错误分类）`http.py`（重试）`guards.py`（护栏）`github.py` `search.py` `scraper.py` `publisher.py` + `builtin/`（可选依赖降级） | 第 3 篇 |
 | `knowledge/` | 知识层：`memory/`（去重、渐进式披露）+ `rag/`（分词/BM25、Embedding、向量库、混合检索）+ `ingest.py` + `unified_retriever` | 第 4 篇 |
 | `workflows/` | 周报主流程：`steps/`（六个步骤）+ `weekly_report.py`（Workflow 编排 + HITL） | 第 5 篇 |
@@ -161,3 +163,31 @@ api / scheduler  →  workflows  →  agents / tools  →  knowledge  →  db / 
 
 **禁止反向依赖**。任何"下层 import 上层"的写法都会在 review 中被拦下。
 
+
+
+## 能力扩展（第 6 篇）
+
+**MCP** 把发布能力挪到独立进程（主进程碰不到平台 SDK 与凭证）：
+
+```bash
+uv pip install -e ".[mcp]"                          # mcp + fastmcp 两个都要
+uv run zhixun mcp --list                            # Server 注册表与可用性
+uv run zhixun mcp --call render_markdown --arg markdown="# 标题" --arg platform=wechat
+```
+
+**Skills** 把"怎么做对"从提示词里搬出来，按角色挂载（延续最小权限思路）：
+
+| Agent | 技能 |
+|---|---|
+| collector / analyst | （无） |
+| writer | `wechat-format` |
+| editor | `tech-fact-check` |
+| publisher | `cover-design` |
+
+```bash
+uv run zhixun skills --list
+```
+
+两个实测坑（已写成测试）：**MCP 连接成功要以"发现 N 个工具"为准**
+（`connect()` 在 Server 挂掉时不抛异常）；**同步工具里调异步 SDK 要走独立线程**
+（`asyncio.run()` 在事件循环里会抛 RuntimeError）。

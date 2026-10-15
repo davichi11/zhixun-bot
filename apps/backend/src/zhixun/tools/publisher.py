@@ -31,6 +31,8 @@ Harness 的思路从来不是"造一道谁也翻不过的墙"，而是**让错�
 
 from __future__ import annotations
 
+import asyncio
+import json
 from typing import Any, Final
 
 from agno.tools import tool
@@ -96,8 +98,93 @@ def publish_draft(
         return {"ok": False, "platform": platform, "reason": "标题为空"}
 
     logger.info("publish.start", platform=platform, title=title, chars=chars)
-    # TODO(第 6 篇): 通过 MCP 调用各平台 OpenAPI
-    raise NotImplementedError("第 6 篇实现：接入各平台发布 API（或 MCP 工具）")
+
+    # ---- 第 6 篇：委托给 MCP Server 执行真实发布 ----
+    # ⚠️ 关键设计：**四道闸门留在主进程，MCP Server 侧还有一套同构的闸门**。
+    # 这样做的理由是纵深防御（第三篇的思路）：
+    # 主进程可能被改代码绕过，但 Server 是独立进程、独立部署的边界；
+    # 任何一侧单独失效，另一侧仍会拦截。
+    result = _publish_via_mcp(platform=platform, title=title, content=content)
+    if result is None:
+        # MCP 不可用时的降级：明确告诉调用方"没发出去"，而不是假装成功
+        logger.error("publish.mcp_unavailable", platform=platform)
+        return {
+            "ok": False,
+            "platform": platform,
+            "reason": "MCP 发布通道不可用（未安装依赖或 Server 启动失败），已阻止发布",
+        }
+    return result
+
+
+def _publish_via_mcp(*, platform: str, title: str, content: str) -> dict[str, Any] | None:
+    """通过 MCP 调用真正的发布能力。
+
+    ⚠️ **这里必须用独立线程跑事件循环**，不能直接 `asyncio.run()`：
+    这个工具是**同步函数**，但它通常在 Workflow 的异步步骤里被调用，
+    此时事件循环已经在运行 —— `asyncio.run()` 会抛
+    `RuntimeError: asyncio.run() cannot be called from a running event loop`。
+
+    这是一个"同步签名 + 异步实现"函数必须处理的场景。
+
+    Returns:
+        Server 返回的结果；连接不可用时返回 `None`
+    """
+    import asyncio
+    import concurrent.futures
+
+    from zhixun.mcp import load_publisher_tools
+
+    async def _call() -> dict[str, Any] | None:
+        loaded = await load_publisher_tools()
+        if not loaded.ok:
+            logger.warning("publish.mcp_load_failed", failed=loaded.failed)
+            return None
+
+        for toolkit in loaded.tools:
+            fns = getattr(toolkit, "functions", {}) or {}
+            target = next((n for n in fns if n.endswith("publish_draft")), None)
+            if target is None:
+                continue
+            try:
+                raw = await fns[target].entrypoint(
+                    platform=platform,
+                    title=title,
+                    content=content,
+                    approved_by_human=True,  # 主进程已校验；Server 侧仍会再校验一次
+                )
+                return _extract_mcp_payload(raw)
+            finally:
+                await toolkit.close()
+        return None
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, _call()).result(timeout=60)
+    except Exception as exc:  # noqa: BLE001 - 外部进程异常一律转为"没发出去"
+        logger.warning("publish.mcp_call_failed", error=str(exc))
+        return None
+
+
+def _extract_mcp_payload(raw: Any) -> dict[str, Any]:
+    """从 MCP 返回值里取出结构化 payload。
+
+    MCP 工具返回的是 `content=<json 字符串>` + `metadata.structured_content`。
+    优先用后者（框架已经解析过），退回前者手工解析。
+    """
+    metadata = getattr(raw, "metadata", None) or {}
+    structured = metadata.get("structured_content")
+    if isinstance(structured, dict):
+        return structured
+
+    content = getattr(raw, "content", None)
+    if isinstance(content, str):
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+    return {"ok": bool(getattr(raw, "success", False)), "reason": "无法解析 MCP 返回值"}
 
 
 # `@tool` 装饰器在 Agno 3.0.9 上不接受 `has_side_effects` 参数（见装饰器的 VALID_KWARGS），

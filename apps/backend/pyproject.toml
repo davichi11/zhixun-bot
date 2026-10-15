@@ -36,6 +36,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+mcp = [
+    # 第 6 篇：MCP 能力扩展。
+    # ⚠️ Agno 的 MCP **客户端**依赖 fastmcp，不只是 mcp —— 两个都要装。
+    "mcp>=2.1.0,<3.0.0",
+    "fastmcp>=4.0.0,<5",
+]
+
+
 dev = [
     "pytest>=8.3.3",
     "pytest-asyncio>=0.24.0",

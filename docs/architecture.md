@@ -357,3 +357,68 @@ Condition(steps=[Step(..., human_review=...)])      → status=completed  pendin
 
 **附带实测**：`db.get_sessions(session_type=...)` 必须传 `SessionType.WORKFLOW`
 枚举，传字符串 `"workflow"` 会抛 `'str' object has no attribute 'value'`。
+
+---
+
+## ADR-020：MCP Server 的启动命令只来自配置，不接受运行时注入
+
+**决策**：MCP Server 的 `command` 只由 `settings.mcp_publisher_server` 构造，
+**不提供任何运行时传入的入口**（API 参数、用户输入、模型输出）。
+
+**理由**：`MCPTools(command=...)` 等于"在生产机器上执行一个进程"，
+风险等级与第三篇防的 SSRF 同级。Agno 内置了白名单与元字符拦截，
+但**白名单是兜底，不是授权** —— 授权必须在业务侧做。
+
+**Agno 的内置防护（实测）**：`prepare_command()`
+1. 禁止 shell 元字符 `& | ; $ ( )` 与反引号
+2. 可执行文件白名单（python/uv/node/docker…），绝对路径要求文件存在
+
+**回归防护**：`test_mcp_command_comes_from_config_not_input`
+
+---
+
+## ADR-021：MCP 连接成功必须以"发现 N 个工具"为准
+
+**决策**：`load_mcp_tools()` 在 `connect()` 之后**显式校验工具数**，
+为 0 时视为失败。
+
+**实测证据**：Server 因 import 错误挂掉时，`connect()` **不抛异常**，
+只是安静地返回 0 个工具，而日志照打 `connected`。
+
+```
+[info] mcp.connected  server=zhixun-publisher  tool_count=0     ← 实际一个工具都没有
+```
+
+> **一般性原则：凡是"连接成功"这类状态，都必须有一个可断言的证据。
+> 布尔值本身不是证据，"发现了 N 个东西"才是。**
+
+---
+
+## ADR-022：同步工具里调异步 SDK 必须走独立线程
+
+**决策**：同步 `@tool` 函数里调用 MCP（异步）时，
+用 `ThreadPoolExecutor` 在独立线程跑事件循环，**禁止直接 `asyncio.run()`**。
+
+**实测证据**：
+
+```python
+def publish_draft(...):          # 同步工具
+    return asyncio.run(_call())  # ❌
+```
+
+```
+RuntimeError: asyncio.run() cannot be called from a running event loop
+```
+
+**为什么隐蔽**：单测通常在同步上下文里跑（能过），
+而 Workflow 的步骤是 `async def`（生产才炸）。
+
+**正确写法**：
+
+```python
+with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+    return pool.submit(asyncio.run, _call()).result(timeout=60)
+```
+
+> **"同步签名 + 异步实现"是框架集成的高频陷阱**，
+> 而且它的测试环境与生产环境往往不在同一个上下文里。
